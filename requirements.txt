@@ -1,0 +1,14 @@
+# API & Scraping
+apify-client==1.6.1
+exa_py==1.0.9
+yfinance==0.2.36
+
+# Data & ML
+pandas==2.2.0
+numpy==1.26.4
+scikit-learn==1.4.0
+lightgbm==4.3.0
+
+# Environment & Utilities
+python-dotenv==1.0.1
+rich==13.7.0
