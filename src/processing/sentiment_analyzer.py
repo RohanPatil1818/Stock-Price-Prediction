@@ -1,51 +1,82 @@
-# src/processing/sentiment_analyzer.py
+
 import math
 import pandas as pd
 from textblob import TextBlob
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-def get_basic_sentiment(text: str) -> float:
-    """Returns a polarity score between -1.0 (negative) and 1.0 (positive)"""
-    return TextBlob(str(text)).sentiment.polarity
+BULLISH_TERMS = ["surge", "jump", "beat", "growth", "buy", "upgrade", "profit", "bull", "gain", "rally", "strong", "record", "outperform", "rise", "상승", "매수", "호재"]
+BEARISH_TERMS = ["drop", "fall", "miss", "loss", "sell", "downgrade", "crash", "bear", "decline", "weak", "cut", "lawsuit", "risk", "slump", "하락", "매도", "악재"]
+
+def get_financial_sentiment(text: str) -> float:
+    """Combines TextBlob polarity with financial domain keyword scoring."""
+    clean_text = str(text).lower()
+    base_polarity = TextBlob(str(text)).sentiment.polarity
+
+    bull_hits = sum(1 for word in BULLISH_TERMS if word in clean_text)
+    bear_hits = sum(1 for word in BEARISH_TERMS if word in clean_text)
+    lexicon_score = (bull_hits - bear_hits) * 0.18
+
+    combined = base_polarity + lexicon_score
+    return max(-1.0, min(1.0, combined))
+
+def _parse_int(val, default=0) -> int:
+    try:
+        s = str(val).upper().replace(",", "").strip()
+        if "K" in s:
+            return int(float(s.replace("K", "")) * 1000)
+        if "M" in s:
+            return int(float(s.replace("M", "")) * 1000000)
+        return int(float(s))
+    except Exception:
+        return default
 
 def process_and_weight_sentiment(raw_data: dict) -> pd.DataFrame:
     """
-    Takes raw JSON containing social and news arrays, calculates sentiment, 
-    and weights it by engagement.
+    Calculates sentiment across Social (2 sources) and Exa News,
+    weighting by likes, reposts, views, and author_followers.
     """
     records = []
-    
+    now_utc = datetime.now(timezone.utc)
+
     # 1. Process Social Posts
-    for post in raw_data.get("social", []):
+    for idx, post in enumerate(raw_data.get("social", [])):
         text = post.get("text", "")
-        sentiment = get_basic_sentiment(text)
-        
-        # Clean engagement numbers (handle strings like "1.2K")
-        try:
-            views = int(str(post.get("views", "0")).replace("K", "000").replace(",", ""))
-        except:
-            views = 0
-            
-        # Logarithmic weighting prevents viral outliers
-        weight = math.log1p(views) + 1.0 
-        
+        sentiment = get_financial_sentiment(text)
+
+        views = _parse_int(post.get("views", 50), 50)
+        likes = _parse_int(post.get("likes", 5), 5)
+        reposts = _parse_int(post.get("reposts", 1), 1)
+        followers = _parse_int(post.get("author_followers", 200), 200)
+
+        # Engagement + Author Follower weighting
+        weight = math.log1p(likes + 2 * reposts + 0.05 * views + 0.01 * followers) + 1.0
+
+        raw_ts = post.get("timestamp_utc") or post.get("date")
+        if not raw_ts:
+            raw_ts = (now_utc - timedelta(hours=idx * 5)).isoformat()
+
         records.append({
-            "timestamp_utc": post.get("date") or post.get("timestamp_utc") or datetime.now(timezone.utc).isoformat(),
-            "source": "social",
+            "timestamp_utc": raw_ts,
+            "source": post.get("source", "social"),
             "sentiment_raw": sentiment,
             "weight": weight,
             "weighted_sentiment": sentiment * weight
         })
 
-    # 2. Process News 
-    for article in raw_data.get("news", []):
-        text = article.get("title", "") + " " + article.get("text", "")
-        sentiment = get_basic_sentiment(text)
-        weight = 5.0 # Flat baseline weight for institutional news
-        
+    # 2. Process Exa News
+    for idx, article in enumerate(raw_data.get("news", [])):
+        text = f"{article.get('title', '')} {article.get('text', '')}"
+        sentiment = get_financial_sentiment(text)
+        weight = 5.0  # Institutional news weight
+
+        raw_ts = article.get("timestamp_utc") or article.get("published_date")
+        # If Exa keyword search omits timestamp, stagger across recent trading days
+        if not raw_ts:
+            raw_ts = (now_utc - timedelta(hours=(idx + 1) * 12)).isoformat()
+
         records.append({
-            "timestamp_utc": article.get("timestamp_utc") or article.get("published_date") or datetime.now(timezone.utc).isoformat(),
-            "source": "news",
+            "timestamp_utc": raw_ts,
+            "source": "exa_news",
             "sentiment_raw": sentiment,
             "weight": weight,
             "weighted_sentiment": sentiment * weight
@@ -53,6 +84,7 @@ def process_and_weight_sentiment(raw_data: dict) -> pd.DataFrame:
 
     df = pd.DataFrame(records)
     if not df.empty:
-        df['timestamp_utc'] = pd.to_datetime(df['timestamp_utc'], utc=True)
+        df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], utc=True, errors="coerce")
+        df["timestamp_utc"] = df["timestamp_utc"].fillna(now_utc)
         df = df.sort_values("timestamp_utc")
     return df

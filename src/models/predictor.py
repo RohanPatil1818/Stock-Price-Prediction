@@ -3,62 +3,46 @@ import pandas as pd
 import numpy as np
 import lightgbm as lgb
 from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, mean_absolute_error
+
+FEATURES = ["return_1h", "rolling_sentiment_3h", "vol_spike", "hourly_sentiment_score"]
 
 def prepare_modeling_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    
-    # 1. Create the Target Variable (n+1 Direction)
-    # Shift(-1) pulls the NEXT hour's close price up to the current row
-    df['next_close'] = df['Close'].shift(-1)
-    
-    # Target is 1 if the price goes UP next hour, 0 if it goes DOWN
-    df['target_direction'] = (df['next_close'] > df['Close']).astype(int)
-    
-    # 2. Drop the last row because its 'next_close' will be NaN (the future hasn't happened yet)
-    df = df.dropna()
-    return df
+    df["next_close"] = df["Close"].shift(-1)
+    df["next_return"] = (df["next_close"] / df["Close"]) - 1.0
+    df["target_direction"] = (df["next_close"] > df["Close"]).astype(int)
+    return df.dropna()
 
-def train_and_evaluate(df: pd.DataFrame, ticker: str):
-    # The features we engineered in Day 3
-    features = ['return_1h', 'rolling_sentiment_3h', 'vol_spike', 'hourly_sentiment_score']
-    
-    X = df[features]
-    y = df['target_direction']
-    
-    # Walk-Forward Validation: Trains on chronological blocks, testing on the next block
-    tscv = TimeSeriesSplit(n_splits=3) 
-    
-    fold = 1
+def train_and_evaluate(df: pd.DataFrame, ticker: str = ""):
+    X = df[FEATURES]
+    y_dir = df["target_direction"]
+    y_ret = df["next_return"]
+
+    tscv = TimeSeriesSplit(n_splits=3)
     accuracies = []
-    
-    print("\nCross-Validation Results:")
-    for train_index, test_index in tscv.split(X):
-        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
-        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
-        
-        # Initialize LightGBM Classifier
-        model = lgb.LGBMClassifier(
-            n_estimators=50, 
-            max_depth=3, 
-            learning_rate=0.05, 
-            random_state=42,
-            verbose=-1
-        )
-        model.fit(X_train, y_train)
-        
-        # Evaluate out-of-sample
-        preds = model.predict(X_test)
-        acc = accuracy_score(y_test, preds)
-        accuracies.append(acc)
-        print(f"  Fold {fold} Accuracy: {acc:.2f}")
-        fold += 1
-        
-    avg_accuracy = np.mean(accuracies)
-    print(f"Average Out-of-Sample Accuracy: {avg_accuracy:.2%}")
-    
-    # Train the final production model on ALL historical data
-    final_model = lgb.LGBMClassifier(n_estimators=50, max_depth=3, random_state=42, verbose=-1)
-    final_model.fit(X, y)
-    
-    return final_model, features
+    maes = []
+
+    for train_idx, test_idx in tscv.split(X):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_dir_train, y_dir_test = y_dir.iloc[train_idx], y_dir.iloc[test_idx]
+        y_ret_train, y_ret_test = y_ret.iloc[train_idx], y_ret.iloc[test_idx]
+
+        clf = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
+        clf.fit(X_train, y_dir_train)
+        accuracies.append(accuracy_score(y_dir_test, clf.predict(X_test)))
+
+        reg = lgb.LGBMRegressor(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
+        reg.fit(X_train, y_ret_train)
+        maes.append(mean_absolute_error(y_ret_test, reg.predict(X_test)))
+
+    avg_acc = float(np.mean(accuracies))
+    avg_mae = float(np.mean(maes))
+
+    final_clf = lgb.LGBMClassifier(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
+    final_clf.fit(X, y_dir)
+
+    final_reg = lgb.LGBMRegressor(n_estimators=50, max_depth=3, learning_rate=0.05, random_state=42, verbose=-1)
+    final_reg.fit(X, y_ret)
+
+    return final_clf, final_reg, FEATURES, avg_acc, avg_mae
