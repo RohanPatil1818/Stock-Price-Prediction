@@ -12,3 +12,13 @@ lightgbm==4.3.0
 # Environment & Utilities
 python-dotenv==1.0.1
 rich==13.7.0
+
+exa_py
+apify-client
+dotenv
+textblob
+lightgbm
+scikit-learn
+rich
+streamlit
+plotly
