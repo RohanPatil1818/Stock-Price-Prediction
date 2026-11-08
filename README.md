@@ -4,7 +4,6 @@ An end-to-end quantitative AI agent and sentiment arbitrage pipeline that predic
 
 ---
 
-## 🎯 Assessment Requirements Checklist
 
 | Requirement | Implementation Details | Status |
 | :--- | :--- | :--- |
